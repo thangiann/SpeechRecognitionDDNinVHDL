@@ -144,12 +144,12 @@ class SpeechDNN(nn.Module):
 # ==========================================
 # 5. INITIALIZATION AND TRAINING LOOP
 # ==========================================
+# 1. Initialize dataset
+train_dataset = LibriSpeechFramesDataset(raw_ds, BASE_LIBRISPEECH_DIR, max_utterances=15000)
+
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    # 1. Initialize dataset
-    train_dataset = LibriSpeechFramesDataset(raw_ds, BASE_LIBRISPEECH_DIR, max_utterances=15000)
     
     # We use num_workers=0 or 1 on Windows here because we are reading metadata directly 
     # from the dataset object via the loop index.
@@ -271,5 +271,5 @@ if __name__ == "__main__":
         # --- SAVE CHECKPOINT AT END OF EVERY EPOCH ---
         torch.save(model.state_dict(), "speech_dnn_weights.pth")
         print("Progress checkpoint saved to speech_dnn_weights.pth\n")
-torch.save(model.state_dict(), "speech_dnn_weights.pth")
-print("Model weights successfully saved to speech_dnn_weights.pth!")
+        torch.save(model.state_dict(), "speech_dnn_weights.pth")
+        print("Model weights successfully saved to speech_dnn_weights.pth!")
