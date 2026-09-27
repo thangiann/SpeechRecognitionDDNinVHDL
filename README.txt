@@ -23,6 +23,7 @@ compatible with FPGA layer scheduling.
 Network Configuration
 Input Layer: 440 features (13 Mel-frequency Cepstral coefficients or filterbanks + context window of 5 left and 5 right frames)
 Hidden Layer 1: 1024 Neurons (Linear -> LayerNorm -> ReLU -> Dropout 0.15)
-Hidden Layer 2 (Peak): 2048 Neurons (Linear -> LayerNorm -> ReLU -> Dropout 0.15)
+Hidden Layer 2: 1024 Neurons (Linear -> LayerNorm -> ReLU -> Dropout 0.15)
 Hidden Layer 3: 1024 Neurons (Linear -> LayerNorm -> ReLU -> Dropout 0.15)
+Hidden Layer 4: 1024 Neurons (Linear -> LayerNorm -> ReLU -> Dropout 0.15)
 Output Layer: 71 Output Channels (Phoneme target classification)
