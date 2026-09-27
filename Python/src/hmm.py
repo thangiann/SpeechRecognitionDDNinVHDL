@@ -1,162 +1,163 @@
 import os
-
-os.environ["HF_HOME"] = r"D:\HuggingFaceCache"
-
-import torch
 import numpy as np
+import torch
+from dnn import STATE_TO_ID
+
 
 class FullWordViterbiDecoder:
-    def __init__(self, lexicon_path, phoneme_list):
-        if isinstance(phoneme_list, dict):
-            self.phoneme_to_idx = phoneme_list
-        else:
-            self.phoneme_to_idx = {p: i for i, p in enumerate(phoneme_list)}
-            
+
+    def __init__(
+        self, lexicon_path, state_map=STATE_TO_ID, class_priors=None
+    ):
+        self.state_to_idx = state_map
+        self.class_priors = (
+            np.log(class_priors + 1e-8) if class_priors is not None else 0.0
+        )
         self.word_nodes = {}
         self.load_lexicon(lexicon_path)
         self.compile_search_space()
 
     def load_lexicon(self, path):
-        """Parses words and their constituent phonetic state sequences."""
         self.lexicon = {}
         if not os.path.exists(path):
-            raise FileNotFoundError(f"Please create a lexicon file at {path}")
-            
-        with open(path, 'r', encoding='utf-8') as f:
+            raise FileNotFoundError(f"Lexicon not found at {path}")
+
+        # Ensure explicit silence entry exists
+        if "SIL" in self.state_to_idx:
+            self.lexicon["<SIL>"] = [self.state_to_idx["SIL"]]
+
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 2:
                     word = parts[0]
-                    phonemes = parts[1:]
-                    indices = [self.phoneme_to_idx[p] for p in phonemes if p in self.phoneme_to_idx]
+                    state_tokens = parts[1:]
+                    indices = [
+                        self.state_to_idx[s]
+                        for s in state_tokens
+                        if s in self.state_to_idx
+                    ]
                     if indices:
                         self.lexicon[word] = indices
 
     def compile_search_space(self):
-        """Flattens the entire dictionary graph into a continuous index network."""
         self.state_to_word = []
-        self.state_phoneme_idx = []
-        self.word_boundaries = []
-        self.word_phoneme_counts = {}
-        
+        self.state_target_idx = []
+        self.word_start_mask = []
+        self.word_end_indices = []
+        self.word_start_indices = []
+
         curr_idx = 0
-        for word, p_indices in self.lexicon.items():
+        for word, s_indices in self.lexicon.items():
             start = curr_idx
-            for p_idx in p_indices:
+            for i, s_idx in enumerate(s_indices):
                 self.state_to_word.append(word)
-                self.state_phoneme_idx.append(p_idx)
+                self.state_target_idx.append(s_idx)
+                self.word_start_mask.append(i == 0)
                 curr_idx += 1
             end = curr_idx - 1
-            self.word_boundaries.append((start, end, word))
-            self.word_phoneme_counts[word] = len(p_indices)
-            
-        self.total_graph_states = len(self.state_to_word)
-        self.state_phoneme_idx = np.array(self.state_phoneme_idx)
+            self.word_start_indices.append(start)
+            self.word_end_indices.append(end)
 
-    def decode(self, dnn_posteriors, word_insertion_penalty=5e-4, acoustic_scale=0.15):
-        """
-        Executes standard structural word-level token passing with post-emission filtering.
-        """
+        self.total_graph_states = len(self.state_to_word)
+        self.state_target_idx = np.array(self.state_target_idx, dtype=np.int32)
+        self.word_start_mask = np.array(self.word_start_mask, dtype=bool)
+        self.word_end_indices = np.array(self.word_end_indices, dtype=np.int32)
+        self.word_start_indices = np.array(
+            self.word_start_indices, dtype=np.int32
+        )
+
+        print(
+            f"Decoder Graph Initialized with {self.total_graph_states} active states."
+        )
+
+    def decode(
+        self,
+        dnn_posteriors,
+        word_insertion_penalty=0.8,
+        acoustic_scale=0.14,
+    ):
         num_frames = dnn_posteriors.shape[0]
         num_states = self.total_graph_states
-        
-        # Scale log-posteriors
-        log_B = np.log(dnn_posteriors + 1e-12) * acoustic_scale
-        
-        viterbi = np.full((num_frames, num_states), -np.inf)
-        backpointer = np.zeros((num_frames, num_states), dtype=int)
-        
-        # Standard transition probabilities
-        self_loop_cost = np.log(0.88)
-        next_step_cost = np.log(0.12)
-        log_wip = np.log(word_insertion_penalty)
-        
-        # Initialize Frame 0
-        for start, _, _ in self.word_boundaries:
-            viterbi[0, start] = log_B[0, self.state_phoneme_idx[start]]
 
-        # Standard Forward Token Passing Loop
+        # Bayes rule normalization: log P(x|q) = log P(q|x) - log P(q)
+        log_posteriors = np.log(dnn_posteriors + 1e-12) - self.class_priors
+        log_B = log_posteriors * acoustic_scale
+
+        viterbi = np.full((num_frames, num_states), -np.inf)
+        backpointer = np.zeros((num_frames, num_states), dtype=np.int32)
+
+        self_loop_cost = np.log(0.60)
+        next_step_cost = np.log(0.40)
+        log_wip = np.log(word_insertion_penalty)
+
+        # Initialize Frame 0
+        starts = self.word_start_indices
+        viterbi[0, starts] = log_B[0, self.state_target_idx[starts]]
+
+        # Forward Token Passing Loop
         for t in range(1, num_frames):
-            # Step A: Intra-word Transitions
-            for start, end, _ in self.word_boundaries:
-                for s in range(start, end + 1):
-                    cost_stay = viterbi[t-1, s] + self_loop_cost
-                    
-                    cost_move = -np.inf
-                    if s > start:
-                        cost_move = viterbi[t-1, s-1] + next_step_cost
-                        
-                    if cost_stay >= cost_move:
-                        viterbi[t, s] = cost_stay + log_B[t, self.state_phoneme_idx[s]]
-                        backpointer[t, s] = s
-                    else:
-                        viterbi[t, s] = cost_move + log_B[t, self.state_phoneme_idx[s]]
-                        backpointer[t, s] = s - 1
-                        
-            # Step B: Inter-word Global Transitions
-            best_word_end_score = -np.inf
-            best_word_end_state = -1
-            for _, end, _ in self.word_boundaries:
-                if viterbi[t-1, end] > best_word_end_score:
-                    best_word_end_score = viterbi[t-1, end]
-                    best_word_end_state = end
-                    
+            prev_v = viterbi[t - 1]
+
+            # Vectorized intra-word transitions
+            cost_stay = prev_v + self_loop_cost
+            cost_move = np.full(num_states, -np.inf)
+            cost_move[1:] = prev_v[:-1] + next_step_cost
+            cost_move[self.word_start_mask] = (
+                -np.inf
+            )  # Block invalid inter-word bleed
+
+            stay_wins = cost_stay >= cost_move
+            best_intra = np.where(stay_wins, cost_stay, cost_move)
+
+            viterbi[t] = best_intra + log_B[t, self.state_target_idx]
+            backpointer[t] = np.where(
+                stay_wins,
+                np.arange(num_states, dtype=np.int32),
+                np.arange(num_states, dtype=np.int32) - 1,
+            )
+
+            # Inter-word Global Transitions
+            best_end_idx = np.argmax(prev_v[self.word_end_indices])
+            best_word_end_score = prev_v[self.word_end_indices[best_end_idx]]
+            best_word_end_state = self.word_end_indices[best_end_idx]
+
             if best_word_end_score > -np.inf:
-                for start, _, _ in self.word_boundaries:
-                    cross_word_score = best_word_end_score + log_wip + log_B[t, self.state_phoneme_idx[start]]
-                    if cross_word_score > viterbi[t, start]:
-                        viterbi[t, start] = cross_word_score
-                        backpointer[t, start] = -best_word_end_state
+                cross_score = (
+                    best_word_end_score
+                    + log_wip
+                    + log_B[t, self.state_target_idx[starts]]
+                )
+                better_cross = cross_score > viterbi[t, starts]
+
+                # Update starting states that benefit from word transition
+                target_starts = starts[better_cross]
+                viterbi[t, target_starts] = cross_score[better_cross]
+
+                # Offset encoding to prevent sign bug on index 0
+                backpointer[t, target_starts] = -(best_word_end_state + 1)
 
         # Backtracking Phase
-        best_end_state = np.argmax(viterbi[-1, :])
+        best_end_state = np.argmax(viterbi[-1])
+        curr_state = int(best_end_state)
         state_path = []
-        curr_state = best_end_state
-        
+
         for t in range(num_frames - 1, -1, -1):
             state_path.insert(0, curr_state)
             next_ptr = backpointer[t, curr_state]
             if next_ptr < 0:
-                curr_state = int(abs(next_ptr))
+                curr_state = int(abs(next_ptr) - 1)
             else:
                 curr_state = int(next_ptr)
-                
-        # Word emission
-        raw_words = []
-        last_word = None
-        word_frame_count = 0
 
+        # Reconstruct words
+        recognized_words = []
+        last_word = None
         for s in state_path:
             word = self.state_to_word[s]
-            if word == last_word:
-                word_frame_count += 1
-            else:
-                if last_word is not None:
-                    # Require short words (<=2 phonemes) to hold >= 4 frames (40ms)
-                    min_frames = 4 if self.word_phoneme_counts.get(last_word, 3) <= 2 else 3
-                    if word_frame_count >= min_frames:
-                        raw_words.append(last_word)
+            if word != last_word:
+                if word and word != "<SIL>":
+                    recognized_words.append(word)
                 last_word = word
-                word_frame_count = 1
 
-        if last_word is not None:
-            min_frames = 4 if self.word_phoneme_counts.get(last_word, 3) <= 2 else 3
-            if word_frame_count >= min_frames:
-                raw_words.append(last_word)
-
-        # Cleanup Phase: Remove edge noise & repeated short auxiliary words
-        cleaned_words = []
-        for w in raw_words:
-            # Skip consecutive repetitions of short 1-2 phoneme words (e.g. 'HAD HAD')
-            is_short = self.word_phoneme_counts.get(w, 3) <= 2
-            if is_short and cleaned_words and cleaned_words[-1] == w:
-                continue
-            cleaned_words.append(w)
-
-        # Trim isolated short filler words at the extreme start/end of the sentence
-        while cleaned_words and self.word_phoneme_counts.get(cleaned_words[0], 3) <= 2:
-            cleaned_words.pop(0)
-        while cleaned_words and self.word_phoneme_counts.get(cleaned_words[-1], 3) <= 2:
-            cleaned_words.pop()
-
-        return " ".join(cleaned_words)
+        return " ".join(recognized_words)
