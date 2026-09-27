@@ -124,8 +124,8 @@ def run_word_evaluation(num_samples=3):
                 # Decode using tuned 3-state HMM parameters
                 reconstructed_text = word_decoder.decode(
                     posteriors,
-                    word_insertion_penalty=1e-5,
-                    acoustic_scale=0.10,
+                    word_insertion_penalty=1.5,
+                    acoustic_scale=0.17,
                 )
 
                 print(f"\n[Sample {sample_no}] Utterance ID: {utterance_id}")

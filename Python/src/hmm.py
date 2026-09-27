@@ -87,8 +87,8 @@ class FullWordViterbiDecoder:
         viterbi = np.full((num_frames, num_states), -np.inf)
         backpointer = np.zeros((num_frames, num_states), dtype=np.int32)
 
-        self_loop_cost = np.log(0.60)
-        next_step_cost = np.log(0.40)
+        self_loop_cost = np.log(0.50)
+        next_step_cost = np.log(0.50)
         log_wip = np.log(word_insertion_penalty)
 
         # Initialize Frame 0
