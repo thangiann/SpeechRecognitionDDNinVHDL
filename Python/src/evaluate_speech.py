@@ -3,6 +3,7 @@ import os
 os.environ["HF_HOME"] = r"D:\HuggingFaceCache"
 
 import random
+import numpy as np
 import torch
 from dnn import (
     BASE_LIBRISPEECH_DIR,
@@ -16,7 +17,7 @@ from dnn import (
 from hmm import FullWordViterbiDecoder
 
 
-def run_word_evaluation(num_samples=3):
+def run_word_evaluation(num_samples=3, num_prior_samples=200):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -31,7 +32,6 @@ def run_word_evaluation(num_samples=3):
     ).to(device)
 
     # 3. Load the best saved checkpoint
-    #weights_path = "speech_dnn_weights.pth"
     weights_path = "sparse_speech_dnn_weights.pth"
     if not os.path.exists(weights_path):
         print(f"[ERROR]: Could not find weights checkpoint at '{weights_path}'")
@@ -57,7 +57,38 @@ def run_word_evaluation(num_samples=3):
             if len(parts) >= 2:
                 global_lexicon[parts[0]] = parts[1:]
 
-    # Pick random utterances from the dataset index
+    # =====================================================================
+    # 5. COMPUTE CLASS PRIORS FROM THE DATASET
+    # =====================================================================
+    print(f"\nComputing class priors from {num_prior_samples} utterances...")
+    class_counts = torch.zeros(NUM_CLASSES, dtype=torch.float32, device=device)
+    
+    # We sample a subset to estimate priors quickly without iterating the whole 22k dataset
+    prior_indices = random.sample(range(len(train_dataset)), min(num_prior_samples, len(train_dataset)))
+    
+    for idx in prior_indices:
+        utterance_id = train_dataset.ids[idx]
+        phoneme_intervals = train_dataset.phonemes_data[idx]
+        spk_id, chap_id, _ = utterance_id.split("-")
+        audio_path = os.path.join(
+            train_dataset.base_dir, "train-clean-100", spk_id, chap_id, f"{utterance_id}.flac"
+        )
+        
+        try:
+            _, targets = process_utterance(audio_path, phoneme_intervals, device)
+            # Count occurrences of each class ID in the target frames
+            unique_classes, counts = torch.unique(targets, return_counts=True)
+            class_counts[unique_classes] += counts.float()
+        except Exception:
+            continue
+
+    # Add a small epsilon to prevent log(0) / division by zero later
+    class_counts += 1e-5
+    class_priors = (class_counts / class_counts.sum()).cpu().numpy()
+    print("Class priors computation complete.")
+    # =====================================================================
+
+    # Pick random utterances from the dataset index for the actual evaluation
     indices_to_test = random.sample(range(len(train_dataset)), num_samples)
 
     print("\n" + "=" * 70)
@@ -110,9 +141,11 @@ def run_word_evaluation(num_samples=3):
                         lf.write(f"{word} {' '.join(global_lexicon[word])}\n")
 
             try:
-                # Instantiate 3-State Viterbi Decoder with STATE_TO_ID
+                # Instantiate 3-State Viterbi Decoder with STATE_TO_ID and class_priors
                 word_decoder = FullWordViterbiDecoder(
-                    lexicon_path=local_lexicon_path, state_map=STATE_TO_ID
+                    lexicon_path=local_lexicon_path, 
+                    state_map=STATE_TO_ID,
+                    class_priors=class_priors  # PASSED THE ESTIMATED PRIORS HERE
                 )
 
                 inputs, targets = process_utterance(
@@ -144,4 +177,6 @@ def run_word_evaluation(num_samples=3):
 
 
 if __name__ == "__main__":
-    run_word_evaluation(num_samples=3)
+    # You can increase num_prior_samples for a more accurate prior distribution
+    # 200 utterances is generally enough for a stable baseline
+    run_word_evaluation(num_samples=3, num_prior_samples=200)

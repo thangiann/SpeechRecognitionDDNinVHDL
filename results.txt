@@ -53,7 +53,7 @@ Frame Accuracy: 65.64%
 [1867-154075-0035] REF: THIS CAROLINE SMITH MAY BE A PERSON OF GREAT VALUE TO ME I HAVE NO DOUBT SHE IS BUT I GOT A GOOD ARGUMENT
 [1867-154075-0035] HYP: THIS CAROLINE SMITH MAY BE PERSON OF GREAT VALUE TO MAY I HAVE NO DOUBT SHE IS BUT I GOT TO GOOD ARGUMENT
 
---- Testing Configuration: Exp1_Aggressive_Weights (W:Q1.4, B:Q1.2, Act:Q4.11, In:Q2.13) ---
+--- Testing Configuration: Exp1_Aggressive_Weights (W:Q1.4, B:Q1.2, Act:Q4.11, In:Q2.13) --- (keeping this one)
 Decoder Graph Initialized with 379 active states.
 Decoder Graph Initialized with 211 active states.
 Decoder Graph Initialized with 448 active states.
